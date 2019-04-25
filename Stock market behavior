@@ -1,0 +1,247 @@
+globals[
+  r         ; realized return 
+  D         ; demand
+  I         ; indice
+  p_t-1     ; price t - 1
+  p_t       ; price
+  buyer     ; total buyer
+  seller    ; total seller
+  hold      ; total hold
+  t_w_DEI   ; time of hold winner shares of DEI agent
+  c_w_DEI   ; count of total winner operation DEI agent
+  t_l_DEI   ; time of hold loss shares of DEI agent
+  c_l_DEI   ; count of total of losso operation DEI agent
+  t_w_STP   ; time of hold winner shares of STOP agent
+  c_w_STP   ; count of total of winner operation STOP agent
+  t_l_STP   ; time of hold loss shares of STOP agent
+  c_l_STP   ; count of total of loss operation STOP agent
+]
+
+patches-own[
+  q            ; buy price
+  B            ; information from neighbor -> buy
+  S            ; information from neighbor -> sell
+  H            ; information from neighbor -> hold
+  xi           ; expected return 
+  lambda       ; Prospect theory parameter
+  delta        ; Stop loss rule parameter
+  beta         ; equation 4 parameter
+  Pb_B         ; probability to buy - equation 9
+  Pb_S         ; probability to sell - equation 9
+  Pb_N         ; probability to hold - equation 9
+  DEI?         ; disposition-effect investors
+  STP?         ; stop-loss investors
+  buyer?       ; auxiliary variable
+  seller?      ; auxiliary variable
+  psell        ; auxiliary variable
+  transactions ; total number of transactions
+  Wealth       ; wealtg of an agent
+  time1        ; auxiliar variable
+]
+
+to setup
+  if random? = false [random-seed 12345]     ; fixed seed of experiment
+  clear-all     ; clean previous simulations
+  ask patches[
+    let t random-float 1                                 ; auxiliary variable distributed between zero and one
+    ifelse t < STP [ set STP? true set DEI? false] [     ; handing agents among STP e DEI
+      set STP? false set DEI? true ]                     ; handing agents among STP e DEI
+    set buyer? false                                     ; cleaning variable
+    set seller? false                                    ; cleaning variable
+    set pcolor (white)                                   ; white for agents not operated in the period
+    set q 0                                              ; purchase price equal to zero - initial setup
+    set psell 0                                          ; selling price of zero - initial setup
+    ifelse (i. = 1) or (i. = 0) [ set xi 0.01 ] [ set xi ((x_max / i.) * random i.) + 0.01]    ; create heterogeneous expectations
+    set lambda 2.25 * xi                                 ; recording individual value 
+    set Wealth 100                                       ; arbitrary starting value of individual Wealth, not influence the results of experiments          
+    set transactions 0                                   ; resetting number of transactions the agent
+    set delta random-float .02                           ; creating a particular value of the delta, used in the STOP strategy
+    set beta random-float xi ]                           ; individualde beta value
+  set I 0                                                ; setup indice
+  set p_t P_initial                                      ; setup initial price
+  set p_t-1 P_initial                                    ; setup initial price
+  set t_w_DEI 0
+  set c_w_DEI 0
+  set t_l_DEI 0
+  set c_l_DEI 0
+  set t_w_STP 0
+  set c_w_STP 0   
+  set t_l_STP 0   
+  set c_l_STP 0   
+  reset-ticks                  
+end 
+
+to fetch-information     ; Structure of "Equation 4"   
+  ifelse q != 0 [ set B omega + count neighbors with [ pcolor = blue ] ] [ set B count neighbors with [ pcolor = blue ]  ]           ; value for B, adding omega own information using color to verify information from neighbors
+  ifelse psell != 0 [ set S omega + count neighbors with [ pcolor = red ] ] [ set S count neighbors with [ pcolor = red ] ]          ; value for S, adding omega own information using color to verify information from neighbors
+  ifelse (q = 0) and (psell = 0) [ set H count neighbors with [ pcolor = white ] ] [ set H count neighbors with [ pcolor = white ] ] ; value for H, by adding omega own information using color to verify information from neighbors
+  set Pb_B (B / (B + S + H)) + beta * I                                                                                              ; probabilities buy
+  set Pb_S (S / (B + S + H)) + beta * I                                                                                              ; probabilities sell
+  set Pb_N (H / (B + S + H))                                                                                                         ; probabilities hold
+end  
+
+to agent-STP   ; Structure of "Equation 9"
+  let t random-float 1                                                                                 ;  auxiliary variable
+  ifelse ticks < 100 [ ifelse t < (1 / 3) [ buy ] [ ifelse t > ( 2 / 3) [ sell ] [ not-operate ] ] ] [ ; first 100 simulations are used to setup the model
+  ifelse q = 0 [ 
+    ifelse (r) > (delta) [ STP-buy ] [ not-operate ]                                                   ; opening position, "equation 9" if the last return is greater than delta agent will operate.
+    ] [ 
+    ifelse p_t > q [                                                                                   ; checks if the agent closes the position or not, continuing "equation 9"
+      ifelse (p_t - q) > (lambda * q) [
+        if ticks > 200 [set t_w_STP (t_w_STP + (ticks - time1))]
+        if ticks > 200 [set c_w_STP (c_w_STP + 1)]                                                                 
+        STP-sell ] [ not-operate ] ] [                                                                 ; Gain more than goal, compulsory closing the position
+      ifelse (q - p_t) > (xi * q) [  
+        if ticks > 200 [set t_l_STP (t_l_STP + (ticks - time1))]
+        if ticks > 200 [set c_l_STP (c_l_STP + 1)]                                                                          
+        STP-sell ] [ not-operate ] ] ] ]                                                               ; maximum loss reached, compulsory closing the position
+end   
+
+to buy ; structure for the agent to make a purchase
+  set buyer? true          ; records the information that the agent made a purchase
+  set seller? false        ; records that the agent not made a sale
+  set pcolor (blue)        ; blue for agents who buy
+  set q p_t                ; records of purchase price q
+  set psell 0              ; sales price equal to zero means that the agent not made a sale
+  set time1 ticks          ; counting time with posses share
+end 
+
+to sell ; structure for the agent making a sale
+  set buyer? false         ; means not made a purchase
+  set seller? true         ; records that held a sale
+  set pcolor (red)         ; red agents to sell.
+  set q 0                  ; purchase price equal to zero means that the agent not bought.
+  set psell p_t            ; records sales price
+  set time1 ticks          ; counting time with posses share
+end 
+
+to closing-operation-high ; agents MUST NOT use strategy STOP
+  ;; p_t > q ---> GAIN
+  ifelse (p_t - q) > (xi * q) [                                        ; this structure means: if (as I am earning) is greater than (My individual goal of GAIN)
+    ifelse (random-float 1) < ((p_t - q - (xi * q)) / (xi * q)) [      ; if yes, verifies how much above the target ...
+      set transactions transactions + 1                                ; ... and increases the probability as the gain exceeds the goal.
+      set Wealth Wealth * (1 + ((p_t - q) / q))                        ; Wealth updates the agent
+      set buyer? false      
+      set seller? true      
+      set pcolor (red)      
+      set q 0               
+      set psell 0
+      if ticks > 200 [set t_w_DEI (t_w_DEI + (ticks - time1))]
+      if ticks > 200 [set c_w_DEI (c_w_DEI + 1)]        
+      ] [ not-operate ]     
+      ] [ not-operate ]     
+end 
+
+to closing-operation-falling ; agents MUST NOT use strategy STOP
+  ;; p_t < q ---> LOSS
+  ifelse (q - p_t) > (lambda * q) [ ; this structure means: if (as I am earning) is greater than (individual goal - bearable loss - individual LOSS)
+    ifelse (random-float 1) < ((q - p_t - (q * lambda)) / (lambda * q)) [ ; probability to end position
+      set transactions transactions + 1     ; 
+      set Wealth Wealth * (1 + ((p_t - q) / q))     ; 
+      set buyer? false     ; 
+      set seller? true     ; 
+      set pcolor (red)     ; 
+      set q 0              ; 
+      set psell 0          ; 
+      if ticks > 200 [set t_l_DEI (t_l_DEI + (ticks - time1))]
+      if ticks > 200 [set c_l_DEI (c_l_DEI + 1)]
+      ] [ not-operate ]    ; 
+      ] [ not-operate ]    ; 
+end 
+
+to closing-shortposition-high ; agents MUST NOT use strategy STOP      - Agent conducted an asset sale, gain if the asset falls and loses if the asset rise
+  ;; p_t > psell ---> LOSS
+  ifelse (p_t - psell) > (lambda * psell) [                                           ; this structure means: if (as I am earning) is greater than (individual goal - bearable loss - individual LOSS)
+    ifelse (random-float 1) < ((p_t - psell - (lambda * psell)) / (lambda * psell)) [ ; probability to end position
+      set transactions transactions + 1     
+      set Wealth Wealth * (1 + ((psell - p_t) / psell))    
+      set buyer? true
+      set seller? false
+      set pcolor (blue)
+      set q 0
+      set psell 0
+      if ticks > 200 [set t_l_DEI (t_l_DEI + (ticks - time1))]
+      if ticks > 200 [set c_l_DEI (c_l_DEI + 1)]       
+      ] [ not-operate ]
+      ] [ not-operate ]
+end 
+
+to closing-shortposition-falling ; agents MUST NOT use strategy STOP   
+  ;; psell > p_t ---> GAIN
+  ifelse (psell - p_t) > (xi * psell) [                                                ; this structure means: if (as I am earning) is greater than (My individual goal of GAIN)
+    ifelse (random-float 1) < ((psell - p_t - (xi * psell)) / (xi * psell)) [ ; 
+      set transactions transactions + 1
+      set Wealth Wealth * (1 + ((psell - p_t) / psell))
+      set buyer? true
+      set seller? false
+      set pcolor (blue)
+      set q 0
+      set psell 0
+      if ticks > 200 [set t_w_DEI (t_w_DEI + (ticks - time1))]
+      if ticks > 200 [set c_w_DEI (c_w_DEI + 1)]       
+      ] [ not-operate ]
+    ] [ not-operate ]
+end 
+
+to STP-buy ;; agents using order STOP
+  set buyer? true        
+  set seller? false     
+  set pcolor (blue)     
+  set q p_t              
+  set psell 0
+  set time1 ticks            
+end 
+
+to STP-sell ;; agents using order STOP
+  set transactions transactions + 1          
+  set Wealth Wealth * (1 + ((p_t - q) / q)) 
+  set buyer? false
+  set seller? true
+  set pcolor (red)
+  set q 0               
+  set psell 0         
+end 
+
+to not-operate ;; all agents
+  set buyer? false
+  set seller? false
+  set pcolor (white)
+end 
+
+to traders    ; agents in the distribution of heterogeneity received minimum value of "x". Very active agents in the real market would be daytrader.
+  let t random-float 1             ; t = auxiliary variable; first 100 simulations are used to setup the model
+  ifelse ticks < 100 [ ifelse t < (1 / 3) [ buy ] [ ifelse t > ( 2 / 3) [ sell ] [ not-operate ] ] ] [ fetch-information  ifelse t < ((beta * I) + Pb_B) [ buy ] [ ifelse t > (1 - Pb_S + (beta * I)) [ sell ] [ not-operate ] ] ]
+  ifelse q != 0 [ set transactions transactions + 1 set Wealth Wealth * (1 + ((p_t - q) / q)) ] [ if psell != 0 [ set Wealth Wealth * (1 + ((psell - p_t) / psell)) ]  ]
+end 
+
+to agent-DEI    ; Finishing structure operation of the agent subject to the disposition effect
+  let t random-float 1                                                                                             ; auxiliary variable
+  ifelse ticks < 100 [ ifelse t < (1 / 3) [ buy ] [ ifelse t > ( 2 / 3) [ sell ] [ not-operate ] ] ] [             ; first 100 simulations are used to setup the model
+  ifelse q != 0 [                                                                                          
+    ifelse p_t > q [ closing-operation-high ] [ closing-operation-falling ] ] [                                    ; checks whether the agent is winning or losing, and calls one of the functions
+    ifelse psell != 0 [                                                                                            ; agent sold 
+      ifelse p_t > psell [ closing-shortposition-high ] [ closing-shortposition-falling ] ] [                      ; checks whether the agent is winning or losing, and calls one of the functions
+      fetch-information 
+      ifelse t < (Pb_B) [ buy ] [                                                                                  ; uses equation 4 to verify that buys, sells, or does not operate
+        ifelse t > (1 - Pb_S) [ sell ] [ not-operate ] ] ] ] ]
+end 
+
+to I-indice ; computing indice I
+  ifelse (buyer + seller ) != 0 [ ifelse Index = true [ if ((ticks mod 50) = 0) and (ticks > 1) [ set I ((buyer - seller) / (buyer + seller + hold)) + (I_Index) ] ] [ set I 0 ] ] [ set I 0 ]  
+end 
+
+to go ; Run
+  ask patches[
+    ifelse xi = 0.01 [ traders ] [ 
+      ifelse STP? [ agent-STP ] [ agent-DEI ] ] ] ; checking which type of agent. Calls one of its functions as above.
+  set buyer count patches with [buyer?]             
+  set seller count patches with [seller?]
+  set hold (max-pycor * max-pxcor) - buyer - seller
+  ifelse (buyer + seller) != 0 [ set D ((buyer - seller) / (buyer + seller + hold)) ] [ set D 0 ] ; computing demand period
+  set p_t (((exp(D) - exp(- D)) / (exp(D) + exp(- D)) + 1 ) * p_t-1)                              ; computing the price period
+  set r (ln(p_t) - ln(p_t-1))                                                                     ; computing the first return period
+  set p_t-1 p_t                                                                                   ; updating price of the previous period
+  I-indice                                                                                        ; calling function indice I
+  tick ; new period
+end 
+  
